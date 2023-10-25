@@ -92,6 +92,21 @@ def get_wib2_infos(x):
     return crate, slot, link
 
 
+def get_wibeth_infos(x):
+
+    x = int(x)
+    version = (x      ) & 0x3f
+    det_id  = (x >> 6 ) & 0x3f
+    crate   = (x >> 12) & 0x3ff
+    slot    = (x >> 22) & 0xf
+    strm    = (x >> 26) & 0xff
+    rsvd    = (x >> 34) & 0x3f
+    seqid   = (x >> 40) & 0xfff
+    b_len   = (x >> 52) & 0xfff
+
+    # print(f"{x:016x} v {version} det {det_id} crate {crate} slot {slot} strm {strm} seqid {seqid} {b_len}")
+    return crate, slot, strm
+
 @nb.jit(nopython = True)
 def read_8evt_uint12_nb(data):
     """ reads the bottom electronics event """
@@ -129,6 +144,35 @@ def read_8evt_uint12_nb(data):
 
 
 @nb.jit(nopython = True)
+def read_eth_evt_uint14_nb(data):
+
+    tt = np.frombuffer(data, dtype=np.uint32)
+    assert np.mod(tt.shape[0],14)==0
+
+    out=np.empty(tt.shape[0]//14*32,dtype=np.uint16)
+
+    n_words_per_frame = 64*14//32
+    n_words_per_fragment = 64*n_words_per_frame
+
+    for i in nb.prange(tt.shape[0]//n_words_per_fragment): 
+        frag_off = i*n_words_per_fragment
+        for j in range(64):
+            # adc_words = tt[i*n_words_per_frame:(i+1)*n_words_per_frame]
+            adc_words = tt[frag_off+j*n_words_per_frame:frag_off+(j+1)*n_words_per_frame]
+            for k in range(64):
+                word = int(14*k/32)
+                first_bit = int((14*k)%32)
+                nbits_first_word = min(14, 32-first_bit)
+                adc = adc_words[word] >> first_bit
+                if(nbits_first_word < 14):
+                    adc +=  (adc_words[word+1] << nbits_first_word)
+                final = adc & 0x3FFF
+                # 
+                out[(i*64*64) + (64*j) + k] = final
+        return out
+
+
+@nb.jit(nopython = True)
 def read_evt_uint14_nb(data):
 
     tt = np.frombuffer(data, dtype=np.uint32)
@@ -148,6 +192,7 @@ def read_evt_uint14_nb(data):
             final = adc & 0x3FFF
             out[i*256+k] = final
     return out
+
 
 
 class decoder(ABC):
@@ -897,3 +942,223 @@ class _50l_decoder(decoder):
     def close_file(self):
         self.f_in.close()
         print('file closed!')
+
+
+
+class bde_decoder(decoder):
+    def __init__(self, run, sub, filename=None, det='cb', flow_writer="0-0"):
+        self.run = run
+        self.sub = sub
+        self.filename = filename
+        self.detector = det
+        self.flow = flow_writer[:flow_writer.find("-")]
+        self.writer = flow_writer[flow_writer.find("-")+1:]
+
+        print(' -- reading a bde drift electronics file')
+
+
+        """ bde specific parameters """
+        self.n_chan_per_frame = 64
+        self.n_samp_per_frame = 64
+        self.n_chan_per_wib = 128
+        self.n_chan_per_block  = 64
+        self.n_block_per_wib = 4 #128/64
+
+
+        self.trigger_header_type = head_bde.get_trigger_header(det)
+        self.trigger_header_size = self.trigger_header_type.itemsize
+
+        self.component_header_type = head_bde.get_component_header(det)
+        self.component_header_size = self.component_header_type.itemsize
+        
+        self.fragment_header_type = head_bde.get_fragment_header(det)     
+        self.fragment_header_size = self.fragment_header_type.itemsize
+
+        self.wib_header_type = head_bde.get_wib_header(det)     
+        self.wib_header_size = self.wib_header_type.itemsize
+
+
+        # if(det == "cb"):
+        #     """ Not sure what's written in it """
+        #     self.wib_trailer_type = np.dtype([
+        #         ('word1','<u4')  #4
+        #     ])
+        #     """ data now encoded in 14-bit """
+        self.wib_frame_size = self.wib_header_size + int(self.n_samp_per_frame*self.n_chan_per_frame*14/8) 
+
+
+    def get_filename(self):
+        
+        run_path = fname.get_run_directory(self.run)
+        path = cf.data_path + "/" + run_path
+
+
+        r = int(self.run)
+        s = int(self.sub)
+        long_sub = f'{s:04d}'
+        sub_name = 'run'+str(f'{r:06d}')+'_*'+long_sub+'_'
+
+        
+
+        if(self.detector == "cb"):
+            app_name = "dataflow"+self.flow+"_datawriter_"+self.writer
+        elif(self.detector == "cb1"):
+            app_name = "dataflow"+self.flow
+        else:
+            app_name = ""
+
+
+
+        fl = glob.glob(path+"*"+sub_name+"*"+app_name+"*hdf5")
+
+        if(len(fl) != 1):
+            print('none or more than one file matches ... : ', fl)
+            exit()
+
+        return fl[0]
+    
+
+    def open_file(self):
+        f = self.filename if self.filename else self.get_filename()
+        print('Reconstructing ', f)
+        self.f_in = tab.open_file(f,"r")
+
+        # import pdb
+        # pdb.set_trace()
+
+    def read_run_header(self):
+
+        self.events_list = []
+
+        for group in self.f_in.walk_groups():
+            if(group._v_depth != 1):
+                continue
+            self.events_list.append(group._v_name)
+
+        self.events_list.sort()
+        nb_evt = len(self.events_list)
+
+        return nb_evt
+    
+    def read_evt_header(self, ievt):
+        fl = int(self.flow)
+        name =  f'{fl:08d}'
+
+        trig_rec = self.f_in.get_node("/"+self.events_list[ievt], name='RawData/TR_Builder_0x'+name+'_TriggerRecordHeader',classname='Array').read()
+
+        header_magic =  0x33334444
+        header_version = 0x00000003
+
+
+        head = np.frombuffer(trig_rec[:self.trigger_header_size], dtype=self.trigger_header_type)
+        if(head['header_marker'][0] != header_magic or head['header_version'][0] != header_version):
+            print(' there is a problem with the header magic / version ')
+            print("marker : ", head['header_marker'][0], " vs ", header_magic)
+            print("version : ", head['header_version'][0], " vs ", header_version)
+        self.nlinks = head['n_component'][0]
+        self.links = []        
+        for i in range(self.nlinks):
+            s = self.trigger_header_size + i*self.component_header_size
+            t = s + self.component_header_size
+            comp = np.frombuffer(trig_rec[s:t], dtype=self.component_header_type)
+            if comp["source_sysID"][0] != 1:
+                continue
+            self.links.append(comp['source_elemID'][0])
+
+            if False:
+                print(f'version        0x{comp["version"][0]:04x}')
+                print(f'unused         0x{comp["unused"][0]:04x}')
+                print(f'source_version 0x{comp["source_version"][0]:04x}')
+                print(f'source_sysID   0x{comp["source_sysID"][0]:04x}')
+                print(f'source_elemID  0x{comp["source_elemID"][0]:04x}')
+                print(f'0x{comp["window_begin"][0]:08x}')
+                print(f'0x{comp["window_begin"][0]:08x}')
+
+        t_unix = get_unix_time(head['timestamp'][0])
+
+        t_s = int(t_unix)
+        t_ns = (t_unix - t_s) * 1e9
+        dc.evt_list.append( dc.event(self.detector,"bde", head['run_nb'][0], self.sub, ievt, head['trig_num'][0], t_s, t_ns) )
+
+        print(f"Source ids found: {self.links}")
+
+    def read_evt(self, ievt):
+
+        frag_data = {}
+        for src_id in self.links:
+
+            name = "0x%08x"%src_id
+
+            """ to be improved !"""
+            try :
+                frag_name=f"Detector_Readout_{name}_WIBEth"
+                frag_path=f"/{self.events_list[ievt]}/RawData"
+                # print(frag_path,frag_name)
+                stream_data = self.f_in.get_node(frag_path, name=frag_name,classname='Array').read()
+            except tab.NoSuchNodeError:
+                print(f'no source_id number {src_id} with name {frag_path}/{frag_name}')
+                continue
+            print(f"Fragment len {len(stream_data)}")
+
+            frag_head = np.frombuffer(stream_data[:self.fragment_header_size], dtype = self.fragment_header_type)
+
+            n_frames = int((len(stream_data)-self.fragment_header_size)/self.wib_frame_size)
+            print(f"N frames: {n_frames}")
+
+            if(n_frames != cf.n_sample):
+                n_samples = n_frames*64
+                print(f" the fragment {name} has {n_samples} samples ... but {cf.n_sample} are expected !")
+                    
+                cf.n_sample = n_samples
+                if(n_frames == 0):
+                    return
+
+                """ reshape the dc arrays accordingly """
+                dc.data = np.zeros((cf.n_module, cf.n_view, max(cf.view_nchan), cf.n_sample), dtype=np.float32)
+                dc.data_daq = np.zeros((cf.n_tot_channels, cf.n_sample), dtype=np.float32) #view, vchan
+                dc.alive_chan = np.ones((cf.n_tot_channels, cf.n_sample), dtype=bool)
+                cmap.set_unused_channels()
+                dc.mask_daq  = np.ones((cf.n_tot_channels, cf.n_sample), dtype=bool)
+                    
+
+            wib_head = np.frombuffer(stream_data[self.fragment_header_size:self.fragment_header_size+self.wib_header_size], dtype = self.wib_header_type)
+            
+            crate, link, slot = get_wibeth_infos(wib_head['word1'][0])
+            print(crate, link, slot)
+
+
+            # remove the fragment header
+            stream_data = stream_data[self.fragment_header_size:]
+    
+            #remove the wib header and trailer (size20+4, once per wib frame of size 464)
+            stream_data = stream_data.reshape(-1,self.wib_frame_size)[:,self.wib_header_size:self.wib_frame_size].flatten()
+    
+            """ decode data """
+            out = read_eth_evt_uint14_nb(stream_data)
+
+
+            ''' array structure is all channel at time=0 then at time=1 etc '''
+            ''' change it to all times of channel 1, then channel 2 etc '''            
+            out = np.reshape(out, (-1,self.n_chan_per_frame)).T
+            out = out.astype(np.float32)
+        frag_data[src_id] = out
+
+            # dc.data_daq[isrc*self.n_chan_per_frame:(isrc+1)*self.n_chan_per_frame] = out
+
+            # print(dc.data_daq)
+            # print(isrc*self.n_chan_per_frame)
+
+            # import pdb
+            # pdb.set_trace()
+        
+        print(frag_data)
+        print(cf.__dict__)
+
+        self.nlinks = 0
+        self.links = []
+
+
+
+    def close_file(self):
+        self.f_in.close()
+        print('good bye!')

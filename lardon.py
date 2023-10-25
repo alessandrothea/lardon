@@ -31,6 +31,7 @@ if(args.elec == 'top' or args.elec == 'tde'):
     elec = 'top'
 elif(args.elec == 'bot' or args.elec == 'bde'):
     elec = 'bot'
+    elec = args.elec
 
 print('Looking at ',args.detector, ' data with ', args.elec, ' electronics')
 
@@ -43,7 +44,6 @@ if(args.detector == '50l' and args.elec == 'top'):
     print(args.detector, " in ", args.elec, " electronics")
     print(' ... is not possible!')
     sys.exit()
-
 
 run = args.run
 sub = args.sub
@@ -61,7 +61,6 @@ is_pulse = args.is_pulse
 """ some bde special case """
 dataflow = args.dataflow
 datawriter = args.datawriter
-
 
 is_job = args.is_job
 
@@ -147,7 +146,11 @@ cmap.set_unused_channels()
 if(detector=="dp"):
     reader = read.dp_decoder(run, str(sub), args.file)
 elif(detector=="50l"):
-    reader = read._50l_decoder(run, str(sub), args.file)
+    print(f"Elec: {elec}")
+    if elec == "bot":
+        reader = read._50l_decoder(run, str(sub), args.file)
+    elif elec == "bde":
+        reader = read.bde_decoder(run, str(sub), args.file, detector, dataflow+"-"+datawriter)
 else:
     reader = (read.top_decoder if elec == "top" else read.bot_decoder)(run, str(sub), args.file, detector, dataflow+"-"+datawriter)
 

@@ -68,7 +68,7 @@ def get_mapping(detector, elec):
     elif(detector == "dp" and elec == "top"):
         get_dp_mapping()
 
-    elif(detector == "50l" and elec== "bot"):
+    elif(detector == "50l" and elec in ["bot", "bde"]):
         get_50l_bot_mapping()
 
     else :

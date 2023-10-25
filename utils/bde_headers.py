@@ -19,7 +19,7 @@ def get_trigger_header(det):
         ])
         return trigger_header_type
 
-    elif( det == 'cb'):        
+    elif( det in ('cb', '50l') ):        
         trigger_header_type = np.dtype([
             ('header_marker','<u4'),    #4
             ('header_version','<u4'),   #8
@@ -57,11 +57,12 @@ def get_component_header(det):
             ('window_end','<u8')    #40
         ])
         return component_header_type
-    elif(det == 'cb'):
+    elif(det in ('cb', '50l') ):
         component_header_type = np.dtype([
             ('version','<u4'),        #4
-            ('unused','<u4'),         #8
-            ('source_version','<u4'), #12
+            ('unused','<u4'),         #8 padding to 8
+            ('source_version','<u2'), #12
+            ('source_sysID','<u2'),   #14
             ('source_elemID','<u4'),  #16
             ('window_begin','<u8'),   #24
             ('window_end','<u8')      #32                
@@ -98,7 +99,7 @@ def get_fragment_header(det):
         ]) 
         return fragment_header_type
 
-    elif(det == "cb"):
+    elif(det in ("cb", "50l") ):
         fragment_header_type = np.dtype([
             ('frag_marker','<u4'),  #4
             ('frag_version','<u4'), #8
@@ -137,12 +138,12 @@ def get_wib_header(det):
         ])
         return wib_header_type
         
-    elif(det == "cb"):
+    elif(det in ("cb", "50l")):
         wib_header_type = np.dtype([
-            ('word1', '<u4'), #4
-            ('ts', '<u8'),    #12
-            ('word2', '<u4'), #16
-            ('word3', '<u4')  #20
+            ('word1', '<u8'), #8
+            ('ts',    '<u8'),    #16
+            ('word2', '<u8'), #24
+            ('word3', '<u8')  #32
         ])
 
         return wib_header_type

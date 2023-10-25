@@ -4,10 +4,10 @@
 lardon_path = "."
 
 """ Where to store the reconstructed output file """
-store_path = lardon_path+"/reco"
+store_path = "/Users/ale/Development/dune/50l/reco"
 
 """ Where to store the control plots """
-plot_path  = lardon_path+"/results"
+plot_path  = "/Users/ale/Development/dune/50l/results"
 
 
 
